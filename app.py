@@ -18,6 +18,7 @@ from src.analysis import compute_results
 from src.chart_builder import generate_charts
 from src.division_report import build_all_division_reports, build_division_report
 from src.longitudinal import render_longitudinal_view
+from src.longitudinal_report import build_longitudinal_report
 from src.report_builder import build_report
 
 st.set_page_config(
@@ -61,6 +62,39 @@ def _check_password() -> bool:
 _check_password()
 
 # ---------------------------------------------------------------------------
+# Year-detection helper (parses REDCap timestamp column to suggest survey year)
+# ---------------------------------------------------------------------------
+
+def _detect_year_from_csv(uploaded_file):
+    """Peek at a REDCap CSV and return (suggested_year_str, date_range_str).
+
+    Returns (None, None) if the timestamp column is missing or unparseable.
+    Always leaves the file pointer reset to 0 so the actual upload can re-read.
+    """
+    try:
+        uploaded_file.seek(0)
+        df_peek = pd.read_csv(uploaded_file)
+        uploaded_file.seek(0)
+        ts_col = next(
+            (c for c in df_peek.columns if "timestamp" in c.lower()), None
+        )
+        if not ts_col:
+            return None, None
+        ts = pd.to_datetime(df_peek[ts_col], errors="coerce").dropna()
+        if ts.empty:
+            return None, None
+        mode_year = int(ts.dt.year.mode().iloc[0])
+        date_range = f"{ts.min().strftime('%b %Y')} → {ts.max().strftime('%b %Y')}"
+        return str(mode_year), date_range
+    except Exception:
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+        return None, None
+
+
+# ---------------------------------------------------------------------------
 # Session state init
 # ---------------------------------------------------------------------------
 
@@ -86,7 +120,41 @@ with st.sidebar:
         accept_multiple_files=True,
         key="uploader",
     )
-    year_input = st.text_input("Survey year", value="", placeholder="e.g. 2026")
+
+    # Peek at the first uploaded file's timestamps to suggest a survey year.
+    detected_year = None
+    if uploads:
+        detected_year, date_range_str = _detect_year_from_csv(uploads[0])
+        if detected_year:
+            st.info(
+                f"**{uploads[0].name}**\n\n"
+                f"Response timestamps: **{date_range_str}**\n\n"
+                f"Suggested survey year: **{detected_year}**"
+            )
+        else:
+            st.caption(
+                "Couldn't read a timestamp column from this file — "
+                "enter the survey year manually."
+            )
+
+    year_input = st.text_input(
+        "Survey year",
+        value=detected_year or "",
+        placeholder="e.g. 2026",
+    )
+
+    # Soft mismatch warning — visible before the user clicks Add year.
+    if (
+        uploads
+        and detected_year
+        and year_input.strip()
+        and year_input.strip() != detected_year
+    ):
+        st.warning(
+            f"⚠️ You entered **{year_input.strip()}** but the response "
+            f"timestamps suggest **{detected_year}**. Double-check the file "
+            f"or proceed if the mismatch is intentional (e.g., FY labeling)."
+        )
 
     if st.button("Add year", type="primary", use_container_width=True):
         if not uploads:
@@ -121,9 +189,31 @@ with st.sidebar:
     else:
         for year_key in sorted(st.session_state["years_data"].keys()):
             r = st.session_state["results"][year_key]
+            df_loaded = st.session_state["years_data"][year_key]
+            # Re-derive response date range so the user can spot mislabeling.
+            ts_col = next(
+                (c for c in df_loaded.columns if "timestamp" in c.lower()),
+                None,
+            )
+            date_hint = ""
+            warning_hint = ""
+            if ts_col is not None:
+                ts = pd.to_datetime(df_loaded[ts_col], errors="coerce").dropna()
+                if not ts.empty:
+                    mode_y = str(int(ts.dt.year.mode().iloc[0]))
+                    date_hint = (
+                        f"responses {ts.min().strftime('%b %Y')} → "
+                        f"{ts.max().strftime('%b %Y')}"
+                    )
+                    if mode_y != str(year_key):
+                        warning_hint = (
+                            f" ⚠️ data is from {mode_y}"
+                        )
             col_a, col_b = st.columns([3, 1])
             with col_a:
                 st.markdown(f"**{year_key}** — n = {r['sample']['n_total']}")
+                if date_hint:
+                    st.caption(date_hint + warning_hint)
             with col_b:
                 if st.button("Remove", key=f"rm_{year_key}", use_container_width=True):
                     del st.session_state["years_data"][year_key]
@@ -330,6 +420,48 @@ with tab3:
         "Compare engagement and well-being metrics across all loaded survey years. "
         "Useful for retreat presentations and tracking interventions over time."
     )
+
+    # Streamlined Word report download (only when ≥2 years loaded)
+    loaded_years = sorted(st.session_state["results"].keys())
+    if len(loaded_years) >= 2:
+        st.markdown("### Streamlined Longitudinal Report")
+        st.caption(
+            "Generate a Word document covering item-level, subscale, well-being, "
+            "NPS, retention, job-factor, and leadership changes across the loaded "
+            "years — with embedded charts. Suitable for sharing with leadership "
+            "before the faculty meeting."
+        )
+        col_a, col_b = st.columns([1, 2])
+        with col_a:
+            if st.button(
+                "Generate longitudinal report",
+                type="primary",
+                use_container_width=True,
+                key="btn_long_report",
+            ):
+                with st.spinner("Building longitudinal report (~15 s)…"):
+                    buf = io.BytesIO()
+                    build_longitudinal_report(
+                        st.session_state["results"], buf
+                    )
+                    buf.seek(0)
+                    st.session_state["_long_report_bytes"] = buf.getvalue()
+        with col_b:
+            cached = st.session_state.get("_long_report_bytes")
+            if cached:
+                first_y = loaded_years[0]
+                last_y = loaded_years[-1]
+                st.download_button(
+                    f"Download {first_y}→{last_y} longitudinal report (.docx)",
+                    data=cached,
+                    file_name=f"VUMC_Anesth_Longitudinal_{first_y}_to_{last_y}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="dl_long_report",
+                )
+
+        st.markdown("---")
+
     render_longitudinal_view(st.session_state["results"])
 
 
