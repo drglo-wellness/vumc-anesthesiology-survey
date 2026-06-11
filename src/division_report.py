@@ -319,20 +319,20 @@ def build_division_report(
     rows.append([
         "Well-being index (mean, 0–10)",
         f"{wb_div['mean']:.2f}" if wb_div else "—",
-        f"{wb_dept['mean']:.2f}",
-        _fmt_delta((wb_div['mean'] if wb_div else 0) - wb_dept['mean']) if wb_div else "—",
+        f"{wb_dept['mean']:.2f}" if wb_dept else "—",
+        _fmt_delta(wb_div['mean'] - wb_dept['mean']) if (wb_div and wb_dept) else "—",
     ])
     rows.append([
         "NPS",
         f"{nps_div['nps']:.1f}" if nps_div else "—",
-        f"{nps_dept['nps']:.1f}",
-        _fmt_delta((nps_div['nps'] if nps_div else 0) - nps_dept['nps']) if nps_div else "—",
+        f"{nps_dept['nps']:.1f}" if nps_dept else "—",
+        _fmt_delta(nps_div['nps'] - nps_dept['nps']) if (nps_div and nps_dept) else "—",
     ])
     rows.append([
         "% Retention at-risk (3-year horizon)",
         f"{ret_div['at_risk_pct']:.1f}%" if ret_div else "—",
-        f"{ret_dept['at_risk_pct']:.1f}%",
-        _fmt_pct_delta((ret_div['at_risk_pct'] if ret_div else 0) - ret_dept['at_risk_pct']) if ret_div else "—",
+        f"{ret_dept['at_risk_pct']:.1f}%" if ret_dept else "—",
+        _fmt_pct_delta(ret_div['at_risk_pct'] - ret_dept['at_risk_pct']) if (ret_div and ret_dept) else "—",
     ])
 
     # Color the delta column

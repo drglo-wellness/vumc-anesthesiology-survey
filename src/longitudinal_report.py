@@ -417,11 +417,52 @@ def _build_doc_helpers(doc):
 def build_longitudinal_report(
     results_by_year: Dict[str, dict],
     output_path: Union[str, BytesIO],
+    scope: str = "all",
 ) -> None:
-    """Generate a streamlined Word report covering all metrics across years."""
+    """Generate a streamlined Word report covering all metrics across years.
+
+    Parameters
+    ----------
+    results_by_year : dict
+        {year_label: results_dict}
+    output_path : str | BytesIO
+        Destination for the .docx
+    scope : "all" | "clinical"
+        "all" (default) reads from the overall sample for WBI/NPS/retention/
+        factors/leadership. "clinical" filters those metrics to clinical
+        faculty only. MINI-Z totals/subscales/burnout are always reported on
+        the clinical sample (consistent with the Mini-Z 2.0 convention).
+    """
+    if scope not in {"all", "clinical"}:
+        raise ValueError(f"scope must be 'all' or 'clinical', got {scope!r}")
     if not results_by_year or len(results_by_year) < 2:
         raise ValueError("Need at least two years of data for a longitudinal "
                          "report.")
+
+    # Selectors that depend on scope
+    def _wb_for(r):
+        return (r["wellbeing"]["clinical"] if scope == "clinical"
+                else r["wellbeing"]["overall"])
+
+    def _nps_for(r):
+        return (r["nps"]["clinical"] if scope == "clinical"
+                else r["nps"]["overall"])
+
+    def _ret_for(r):
+        return (r["retention"]["clinical"] if scope == "clinical"
+                else r["retention"]["overall"])
+
+    def _factors_for(r):
+        return (r.get("factors_clinical", r["factors"]) if scope == "clinical"
+                else r["factors"])
+
+    def _ld_for(r):
+        return (r["leadership"]["clinical"] if scope == "clinical"
+                else r["leadership"]["overall"])
+
+    scope_label = "Clinical Faculty Only" if scope == "clinical" else "All Faculty"
+    sample_size_for = (lambda r: r["sample"]["clinical"]) if scope == "clinical" \
+        else (lambda r: r["sample"]["n_total"])
 
     years = sorted(results_by_year.keys(), key=_sort_key)
     first_y, last_y = years[0], years[-1]
@@ -436,9 +477,9 @@ def build_longitudinal_report(
                     for y in years]
     burnout_pcts = [results_by_year[y]["miniz"]["clinical"].get("burnout_pct")
                     for y in years]
-    wbi_means = [(results_by_year[y]["wellbeing"]["overall"] or {}).get("mean")
+    wbi_means = [(_wb_for(results_by_year[y]) or {}).get("mean")
                  for y in years]
-    nps_vals = [(results_by_year[y]["nps"]["overall"] or {}).get("nps")
+    nps_vals = [(_nps_for(results_by_year[y]) or {}).get("nps")
                 for y in years]
 
     p_head = os.path.join(tmpdir, "headline.png")
@@ -469,33 +510,36 @@ def build_longitudinal_report(
     p_items = os.path.join(tmpdir, "miniz_items.png")
     _chart_miniz_items(years_str, items_means, p_items)
 
-    # WBI band chart
-    low_pcts = [(results_by_year[y]["wellbeing"]["overall"] or {}).get("low_pct", 0)
-                for y in years]
-    mid_pcts = [(results_by_year[y]["wellbeing"]["overall"] or {}).get("mid_pct", 0)
-                for y in years]
-    high_pcts = [(results_by_year[y]["wellbeing"]["overall"] or {}).get("high_pct", 0)
-                 for y in years]
-    p_wbi = os.path.join(tmpdir, "wbi_bands.png")
-    _chart_wbi_bands(years_str, low_pcts, mid_pcts, high_pcts, p_wbi)
+    # WBI band chart — only render for years with WBI data
+    wbi_years = [y for y in years if _wb_for(results_by_year[y]) is not None]
+    wbi_years_str = [str(y) for y in wbi_years]
+    low_pcts = [(_wb_for(results_by_year[y]) or {}).get("low_pct", 0)
+                for y in wbi_years]
+    mid_pcts = [(_wb_for(results_by_year[y]) or {}).get("mid_pct", 0)
+                for y in wbi_years]
+    high_pcts = [(_wb_for(results_by_year[y]) or {}).get("high_pct", 0)
+                 for y in wbi_years]
+    p_wbi = os.path.join(tmpdir, "wbi_bands.png") if wbi_years else None
+    if wbi_years:
+        _chart_wbi_bands(wbi_years_str, low_pcts, mid_pcts, high_pcts, p_wbi)
 
     # NPS components chart
-    prom_pcts = [(results_by_year[y]["nps"]["overall"] or {}).get("promoters_pct", 0)
+    prom_pcts = [(_nps_for(results_by_year[y]) or {}).get("promoters_pct", 0)
                  for y in years]
-    pass_pcts = [(results_by_year[y]["nps"]["overall"] or {}).get("passives_pct", 0)
+    pass_pcts = [(_nps_for(results_by_year[y]) or {}).get("passives_pct", 0)
                  for y in years]
-    det_pcts = [(results_by_year[y]["nps"]["overall"] or {}).get("detractors_pct", 0)
+    det_pcts = [(_nps_for(results_by_year[y]) or {}).get("detractors_pct", 0)
                 for y in years]
     p_nps = os.path.join(tmpdir, "nps_comp.png")
     _chart_nps_components(years_str, prom_pcts, pass_pcts, det_pcts,
                           nps_vals, p_nps)
 
     # Retention chart
-    at_risk_pcts = [(results_by_year[y]["retention"]["overall"] or {}).get("at_risk_pct")
+    at_risk_pcts = [(_ret_for(results_by_year[y]) or {}).get("at_risk_pct")
                     for y in years]
-    likely_stay_pcts = [(results_by_year[y]["retention"]["overall"] or {}).get("likely_stay_pct")
+    likely_stay_pcts = [(_ret_for(results_by_year[y]) or {}).get("likely_stay_pct")
                         for y in years]
-    ret_means = [(results_by_year[y]["retention"]["overall"] or {}).get("mean")
+    ret_means = [(_ret_for(results_by_year[y]) or {}).get("mean")
                  for y in years]
     p_retention = os.path.join(tmpdir, "retention.png")
     _chart_retention(years_str, at_risk_pcts, likely_stay_pcts, ret_means,
@@ -503,7 +547,7 @@ def build_longitudinal_report(
 
     # Factor movers chart (top 10 by absolute change)
     all_factor_labels = sorted({f["factor"] for y in years
-                                for f in results_by_year[y]["factors"]
+                                for f in _factors_for(results_by_year[y])
                                 if f["mean"] is not None})
     factor_delta_pairs = []
     for label in all_factor_labels:
@@ -522,7 +566,7 @@ def build_longitudinal_report(
             short = label if len(label) <= 28 else label[:28] + "…"
             vals = []
             for y in years:
-                fi = {f["factor"]: f for f in results_by_year[y]["factors"]}
+                fi = {f["factor"]: f for f in _factors_for(results_by_year[y])}
                 vals.append((fi.get(label) or {}).get("mean"))
             movers_labels.append((short, vals))
         p_factor_movers = os.path.join(tmpdir, "factor_movers.png")
@@ -535,7 +579,7 @@ def build_longitudinal_report(
         p_factor_movers = None
 
     # Leadership movers chart (top 8 by absolute change)
-    ld_items_by_year = {y: results_by_year[y]["leadership"]["overall"]
+    ld_items_by_year = {y: _ld_for(results_by_year[y])
                         for y in years}
     all_ld_items = sorted({it["item"] for y in years
                            for it in ld_items_by_year[y]})
@@ -593,11 +637,19 @@ def build_longitudinal_report(
     run.bold = True
     run.font.size = Pt(20)
     run.font.color.rgb = NAVY_RGB
+    if scope == "clinical":
+        p = doc.add_paragraph()
+        run = p.add_run("Clinical Faculty Only")
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.color.rgb = ACCENT_RGB
     sample_info = " · ".join(
-        f"{y} n = {results_by_year[y]['sample']['n_total']}" for y in years
+        f"{y} n = {sample_size_for(results_by_year[y])}" for y in years
     )
-    add_para(f"Engagement & Well-being | {sample_info}",
-             italic=True, size=11, color=GRAY_RGB)
+    sample_caption = (f"Engagement & Well-being ({scope_label}) | {sample_info}"
+                      if scope == "clinical"
+                      else f"Engagement & Well-being | {sample_info}")
+    add_para(sample_caption, italic=True, size=11, color=GRAY_RGB)
 
     # ----- 1. Executive summary -----
     add_heading("Executive Summary", 1)
@@ -609,44 +661,59 @@ def build_longitudinal_report(
         good = (d < 0) if lower_is_better else (d > 0)
         return " ▲" if good else (" ▼" if d != 0 else " →")
 
-    d_mz = (miniz_totals[-1] - miniz_totals[0]) if (miniz_totals[0] is not None
-                                                     and miniz_totals[-1] is not None) else None
-    d_bo = (burnout_pcts[-1] - burnout_pcts[0]) if (burnout_pcts[0] is not None
-                                                    and burnout_pcts[-1] is not None) else None
-    d_wb = (wbi_means[-1] - wbi_means[0]) if (wbi_means[0] is not None
-                                              and wbi_means[-1] is not None) else None
-    d_nps = (nps_vals[-1] - nps_vals[0]) if (nps_vals[0] is not None
-                                              and nps_vals[-1] is not None) else None
-    d_risk = (at_risk_pcts[-1] - at_risk_pcts[0]) if (at_risk_pcts[0] is not None
-                                                       and at_risk_pcts[-1] is not None) else None
+    def _first_last(vals):
+        """Return (first_y_idx, last_y_idx) where both vals are not None,
+        or (None, None) if fewer than two non-null values."""
+        non_null = [i for i, v in enumerate(vals) if v is not None]
+        if len(non_null) < 2:
+            return (None, None)
+        return non_null[0], non_null[-1]
 
-    bullets.append(
-        f"MINI-Z total (clinical): {miniz_totals[0]:.2f} → {miniz_totals[-1]:.2f} "
-        f"({_fmt_delta(d_mz)}{_arrow(d_mz)}). Threshold for joyful workplace is 40."
-    )
-    bullets.append(
-        f"% Burnout (clinical): {burnout_pcts[0]:.1f}% → {burnout_pcts[-1]:.1f}% "
-        f"({_fmt_delta(d_bo, pp=True)}{_arrow(d_bo, lower_is_better=True)})."
-    )
-    bullets.append(
-        f"Well-being Index (overall mean, 0–10): {wbi_means[0]:.2f} → {wbi_means[-1]:.2f} "
-        f"({_fmt_delta(d_wb)}{_arrow(d_wb)})."
-    )
-    bullets.append(
-        f"Net Promoter Score (overall): {nps_vals[0]:.1f} → {nps_vals[-1]:.1f} "
-        f"({_fmt_delta(d_nps)}{_arrow(d_nps)})."
-    )
-    if d_risk is not None:
-        bullets.append(
-            f"Retention at-risk (3-year horizon): {at_risk_pcts[0]:.1f}% → "
-            f"{at_risk_pcts[-1]:.1f}% "
-            f"({_fmt_delta(d_risk, pp=True)}{_arrow(d_risk, lower_is_better=True)})."
-        )
+    def _bullet(label, vals, *, pp=False, fmt="{:.2f}",
+                lower_is_better=False, threshold_note=""):
+        i0, i1 = _first_last(vals)
+        if i0 is None:
+            return None
+        first_y_lbl = years_str[i0]
+        last_y_lbl = years_str[i1]
+        d = vals[i1] - vals[i0]
+        first_str = fmt.format(vals[i0]) + ("%" if pp else "")
+        last_str = fmt.format(vals[i1]) + ("%" if pp else "")
+        span = "" if (i0 == 0 and i1 == len(vals) - 1) \
+            else f" ({first_y_lbl}→{last_y_lbl} where collected)"
+        return (f"{label}{span}: {first_str} → {last_str} "
+                f"({_fmt_delta(d, pp=pp)}{_arrow(d, lower_is_better=lower_is_better)})."
+                f"{threshold_note}")
+
+    for line in [
+        _bullet("MINI-Z total (clinical)", miniz_totals,
+                threshold_note=" Threshold for joyful workplace is 40."),
+        _bullet("% Burnout (clinical)", burnout_pcts,
+                pp=True, fmt="{:.1f}", lower_is_better=True),
+        _bullet("Well-being Index (overall mean, 0–10)", wbi_means, fmt="{:.2f}"),
+        _bullet("Net Promoter Score (overall)", nps_vals, fmt="{:.1f}"),
+        _bullet("Retention at-risk (3-year horizon)", at_risk_pcts,
+                pp=True, fmt="{:.1f}", lower_is_better=True),
+    ]:
+        if line:
+            bullets.append(line)
     for b in bullets:
         p = doc.add_paragraph(style="List Bullet")
         p.add_run(b).font.size = Pt(11)
 
     doc.add_paragraph()
+
+    # ----- Coverage note -----
+    coverage_warnings = []
+    if any(v is None for v in wbi_means):
+        missing = [years[i] for i, v in enumerate(wbi_means) if v is None]
+        coverage_warnings.append(
+            f"Well-being Index not collected in {', '.join(str(y) for y in missing)}."
+        )
+    if coverage_warnings:
+        add_para("Data coverage note: " + " ".join(coverage_warnings),
+                 italic=True, size=10, color=GRAY_RGB)
+        doc.add_paragraph()
 
     # ----- 2. Headline metrics -----
     add_heading("1. Headline Metrics", 1)
@@ -731,25 +798,39 @@ def build_longitudinal_report(
 
     # ----- 5. Well-being index -----
     add_heading("4. Well-being Index", 1)
-    add_image(p_wbi, width_in=6.0)
-    add_para("Figure 4. Distribution of WBI scores across bands (low 0–4, "
-             "mid 5–7, high 8–10) by year.",
-             italic=True, size=10, color=GRAY_RGB)
-    wbi_rows = []
-    for y in years:
-        wb = results_by_year[y]["wellbeing"]["overall"] or {}
-        wbi_rows.append([
-            str(y),
-            wb.get("n", "—"),
-            f"{wb.get('mean', 0):.2f}" if wb.get("mean") is not None else "—",
-            f"{wb.get('low_pct', 0):.1f}%" if wb.get("low_pct") is not None else "—",
-            f"{wb.get('mid_pct', 0):.1f}%" if wb.get("mid_pct") is not None else "—",
-            f"{wb.get('high_pct', 0):.1f}%" if wb.get("high_pct") is not None else "—",
-        ])
-    make_table(["Year", "n", "Mean", "% Low (0–4)", "% Mid (5–7)", "% High (8–10)"],
-               wbi_rows,
-               col_widths=[Inches(0.7), Inches(0.5), Inches(0.7),
-                           Inches(1.1), Inches(1.1), Inches(1.2)])
+    if wbi_years:
+        add_image(p_wbi, width_in=6.0)
+        add_para("Figure 4. Distribution of WBI scores across bands (low 0–4, "
+                 "mid 5–7, high 8–10) by year.",
+                 italic=True, size=10, color=GRAY_RGB)
+        missing_wbi = [y for y in years if y not in wbi_years]
+        if missing_wbi:
+            add_para(
+                f"Note: WBI not collected in {', '.join(str(y) for y in missing_wbi)} "
+                f"— chart starts at {wbi_years[0]}.",
+                italic=True, size=10, color=GRAY_RGB,
+            )
+        wbi_rows = []
+        for y in years:
+            wb = _wb_for(results_by_year[y])
+            if wb is None:
+                wbi_rows.append([str(y), "—", "—", "—", "—", "—"])
+            else:
+                wbi_rows.append([
+                    str(y),
+                    wb.get("n", "—"),
+                    f"{wb['mean']:.2f}" if wb.get("mean") is not None else "—",
+                    f"{wb['low_pct']:.1f}%" if wb.get("low_pct") is not None else "—",
+                    f"{wb['mid_pct']:.1f}%" if wb.get("mid_pct") is not None else "—",
+                    f"{wb['high_pct']:.1f}%" if wb.get("high_pct") is not None else "—",
+                ])
+        make_table(["Year", "n", "Mean", "% Low (0–4)", "% Mid (5–7)", "% High (8–10)"],
+                   wbi_rows,
+                   col_widths=[Inches(0.7), Inches(0.5), Inches(0.7),
+                               Inches(1.1), Inches(1.1), Inches(1.2)])
+    else:
+        add_para("Well-being Index was not collected in any of the loaded survey years.",
+                 italic=True, size=11, color=GRAY_RGB)
     doc.add_paragraph()
 
     # ----- 6. NPS -----
@@ -760,7 +841,7 @@ def build_longitudinal_report(
              italic=True, size=10, color=GRAY_RGB)
     nps_rows = []
     for y in years:
-        nps_d = results_by_year[y]["nps"]["overall"] or {}
+        nps_d = _nps_for(results_by_year[y]) or {}
         nps_rows.append([
             str(y),
             nps_d.get("n", "—"),
@@ -783,7 +864,7 @@ def build_longitudinal_report(
              italic=True, size=10, color=GRAY_RGB)
     ret_rows = []
     for y in years:
-        ret = results_by_year[y]["retention"]["overall"] or {}
+        ret = _ret_for(results_by_year[y]) or {}
         ret_rows.append([
             str(y),
             ret.get("n", "—"),
@@ -817,7 +898,7 @@ def build_longitudinal_report(
                                    reverse=True):
         row = [label]
         for y in years:
-            fi = {f["factor"]: f for f in results_by_year[y]["factors"]}
+            fi = {f["factor"]: f for f in _factors_for(results_by_year[y])}
             m = (fi.get(label) or {}).get("mean")
             row.append(f"{m:+.2f}" if m is not None else "—")
         row.append(_fmt_delta(d))

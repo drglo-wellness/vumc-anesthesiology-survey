@@ -250,6 +250,8 @@ def _miniz_full(df: pd.DataFrame) -> dict:
 
 
 def _wb(df: pd.DataFrame):
+    if "wellbeingindex" not in df.columns:
+        return None
     s = df["wellbeingindex"].dropna()
     if len(s) == 0:
         return None
@@ -268,6 +270,8 @@ def _wb(df: pd.DataFrame):
 
 
 def _nps(df: pd.DataFrame):
+    if "promoter" not in df.columns:
+        return None
     s = df["promoter"].dropna()
     if len(s) == 0:
         return None
@@ -289,6 +293,8 @@ def _nps(df: pd.DataFrame):
 
 
 def _leave(df: pd.DataFrame):
+    if "leave" not in df.columns:
+        return None
     s = df["leave"].dropna()
     if len(s) == 0:
         return None
@@ -309,15 +315,27 @@ def _leave(df: pd.DataFrame):
 
 
 def _normalize_leadership(df: pd.DataFrame, col: str, scale: str) -> pd.Series:
+    """Normalize leadership items to a forward 1-5 scale (5 = best).
+
+    Auto-detects the raw scale (0-4 vs 1-5) per item per year because some
+    items shifted coding between survey versions. Scales:
+      "a" / "b" — forward (1/0 = strongly disagree, 5/4 = strongly agree)
+      "c"       — reverse (1 = strongly agree, 5 = strongly disagree)
+    """
     if col not in df.columns:
         return pd.Series([], dtype=float)
     s = df[col].replace(9999, np.nan).dropna()
-    if scale == "a":
-        return s + 1
-    if scale == "b":
+    if len(s) == 0:
         return s
+    obs_min, obs_max = float(s.min()), float(s.max())
+    # 0-4 raw → shift to 1-5
+    is_0_4 = obs_max <= 4 and obs_min >= 0
+    is_1_5 = obs_max <= 5 and obs_min >= 1
+    if is_0_4 and not is_1_5:
+        s = s + 1
+    # If 1-5 already, leave as-is
     if scale == "c":
-        return 6 - s
+        return 6 - s  # reverse so 5 = best
     return s
 
 
@@ -386,9 +404,20 @@ def compute_results(df_raw: pd.DataFrame, year) -> dict:
     n_clin = int((df["GROUP"] == "Clinical").sum())
     n_res = int((df["GROUP"] == "Research").sum())
 
+    # Coverage map — which metrics were collected in this year's survey
+    coverage = {
+        "miniz": all(c in df.columns for c in MINIZ_ITEMS),
+        "wellbeing": "wellbeingindex" in df.columns,
+        "nps": "promoter" in df.columns,
+        "retention": "leave" in df.columns,
+        "factors_present": [c for c in FACTOR_LABELS.keys() if c in df.columns],
+        "leadership_present": [c for c, _, _ in LEADERSHIP_ITEMS if c in df.columns],
+    }
+
     results = {
         "year": year,
         "sample": {"n_total": n_total, "clinical": n_clin, "research": n_res},
+        "coverage": coverage,
     }
 
     # ---------------- MINI-Z ----------------
@@ -499,46 +528,53 @@ def compute_results(df_raw: pd.DataFrame, year) -> dict:
     results["retention"] = ret
 
     # ---------------- Job-satisfaction factors ----------------
-    factor_summary = []
-    for c, lab in FACTOR_LABELS.items():
-        if c not in df.columns:
-            factor_summary.append({"factor": lab, "n": 0, "mean": None, "raw_mean": None,
-                                   "net_positive": None, "very_pos_pct": 0, "som_pos_pct": 0,
-                                   "neutral_pct": 0, "som_neg_pct": 0, "very_neg_pct": 0,
-                                   "pos_pct": 0, "neg_pct": 0})
-            continue
-        s = df[c].dropna()
-        n = int(len(s))
-        if n == 0:
-            factor_summary.append({"factor": lab, "n": 0, "mean": None, "raw_mean": None,
-                                   "net_positive": None, "very_pos_pct": 0, "som_pos_pct": 0,
-                                   "neutral_pct": 0, "som_neg_pct": 0, "very_neg_pct": 0,
-                                   "pos_pct": 0, "neg_pct": 0})
-            continue
-        scaled = s - 2
-        very_pos = int((s == 4).sum())
-        som_pos = int((s == 3).sum())
-        neutral = int((s == 2).sum())
-        som_neg = int((s == 1).sum())
-        very_neg = int((s == 0).sum())
-        pos = very_pos + som_pos
-        neg = very_neg + som_neg
-        factor_summary.append({
-            "factor": lab,
-            "n": n,
-            "mean": round(float(scaled.mean()), 2),
-            "raw_mean": round(float(s.mean()), 2),
-            "net_positive": round(100 * (pos - neg) / n, 1),
-            "very_pos_pct": round(100 * very_pos / n, 1),
-            "som_pos_pct": round(100 * som_pos / n, 1),
-            "neutral_pct": round(100 * neutral / n, 1),
-            "som_neg_pct": round(100 * som_neg / n, 1),
-            "very_neg_pct": round(100 * very_neg / n, 1),
-            "pos_pct": round(100 * pos / n, 1),
-            "neg_pct": round(100 * neg / n, 1),
-        })
-    factor_summary.sort(key=lambda x: -(x["mean"] if x["mean"] is not None else -99))
-    results["factors"] = factor_summary
+    def _factor_summary(sub_df: pd.DataFrame) -> list:
+        out = []
+        for c, lab in FACTOR_LABELS.items():
+            if c not in sub_df.columns:
+                out.append({"factor": lab, "n": 0, "mean": None, "raw_mean": None,
+                            "net_positive": None, "very_pos_pct": 0, "som_pos_pct": 0,
+                            "neutral_pct": 0, "som_neg_pct": 0, "very_neg_pct": 0,
+                            "pos_pct": 0, "neg_pct": 0})
+                continue
+            s = sub_df[c].dropna()
+            n = int(len(s))
+            if n == 0:
+                out.append({"factor": lab, "n": 0, "mean": None, "raw_mean": None,
+                            "net_positive": None, "very_pos_pct": 0, "som_pos_pct": 0,
+                            "neutral_pct": 0, "som_neg_pct": 0, "very_neg_pct": 0,
+                            "pos_pct": 0, "neg_pct": 0})
+                continue
+            scaled = s - 2
+            very_pos = int((s == 4).sum())
+            som_pos = int((s == 3).sum())
+            neutral = int((s == 2).sum())
+            som_neg = int((s == 1).sum())
+            very_neg = int((s == 0).sum())
+            pos = very_pos + som_pos
+            neg = very_neg + som_neg
+            out.append({
+                "factor": lab,
+                "n": n,
+                "mean": round(float(scaled.mean()), 2),
+                "raw_mean": round(float(s.mean()), 2),
+                "net_positive": round(100 * (pos - neg) / n, 1),
+                "very_pos_pct": round(100 * very_pos / n, 1),
+                "som_pos_pct": round(100 * som_pos / n, 1),
+                "neutral_pct": round(100 * neutral / n, 1),
+                "som_neg_pct": round(100 * som_neg / n, 1),
+                "very_neg_pct": round(100 * very_neg / n, 1),
+                "pos_pct": round(100 * pos / n, 1),
+                "neg_pct": round(100 * neg / n, 1),
+            })
+        out.sort(key=lambda x: -(x["mean"] if x["mean"] is not None else -99))
+        return out
+
+    # Backward-compat: results["factors"] stays the overall list.
+    # New: results["factors_clinical"] / results["factors_research"].
+    results["factors"] = _factor_summary(df)
+    results["factors_clinical"] = _factor_summary(df[df["GROUP"] == "Clinical"])
+    results["factors_research"] = _factor_summary(df[df["GROUP"] == "Research"])
 
     # ---------------- Leadership ----------------
     ld = {

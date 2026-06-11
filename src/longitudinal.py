@@ -135,8 +135,34 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
     delta_col = f"Δ {first_y}→{last_y}"
 
     # =====================================================================
+    # 0. Data Coverage Snapshot
+    # =====================================================================
+    st.subheader("Data Coverage Across Loaded Years")
+    st.caption(
+        "Survey instruments evolved over time. The table below shows which "
+        "metrics were collected in each loaded survey year — sections below "
+        "automatically skip missing data and footnote which years are missing."
+    )
+    cov_rows = []
+    for y in years:
+        cov = results_by_year[y].get("coverage", {})
+        n_total = results_by_year[y]["sample"]["n_total"]
+        cov_rows.append({
+            "Year": y,
+            "n respondents": n_total,
+            "MINI-Z (10 items)": "✓" if cov.get("miniz") else "—",
+            "Well-being Index": "✓" if cov.get("wellbeing") else "—",
+            "NPS": "✓" if cov.get("nps") else "—",
+            "Retention (3-yr)": "✓" if cov.get("retention") else "—",
+            "Job factors": f"{len(cov.get('factors_present', []))}",
+            "Leadership items": f"{len(cov.get('leadership_present', []))}",
+        })
+    st.dataframe(pd.DataFrame(cov_rows), use_container_width=True, hide_index=True)
+
+    # =====================================================================
     # 1. Headline Trends Across Years
     # =====================================================================
+    st.markdown("---")
     st.subheader("Headline Trends")
     miniz_vals = [results_by_year[y]["miniz"]["clinical"].get("total", {}).get("mean")
                   for y in years]
@@ -168,6 +194,7 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
             use_container_width=True,
         )
     c3, c4 = st.columns(2)
+    wbi_missing_years = [y for y, v in zip(years, wbi_vals) if v is None]
     with c3:
         st.plotly_chart(
             _line_chart(years_str, wbi_vals,
@@ -177,6 +204,8 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
                         y_range=[0, 10], color=TEAL),
             use_container_width=True,
         )
+        if wbi_missing_years:
+            st.caption(f"_Well-being Index not collected in_ {', '.join(str(y) for y in wbi_missing_years)}.")
     with c4:
         st.plotly_chart(
             _line_chart(years_str, nps_vals,
