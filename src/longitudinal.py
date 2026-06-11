@@ -1,5 +1,7 @@
-"""Longitudinal Streamlit view: line charts, YoY tables, item-level trends,
-and side-by-side job-factor comparison across loaded years."""
+"""Longitudinal Streamlit view: streamlined snapshot across loaded survey
+years. Sections: headline trends, YoY deltas, MINI-Z subscale & item trends,
+retention trends, job-factor highlights (top 5/bottom 5 per year + compare),
+and leadership highlights (same pattern)."""
 from __future__ import annotations
 
 from typing import Dict
@@ -66,9 +68,59 @@ def _fmt_delta(d, *, pp=False):
     return f"{sign}{d:.1f}pp" if pp else f"{sign}{d:.2f}"
 
 
+def _compute_movers(results_by_year, years, accessor):
+    """For an accessor(results, label) -> mean, return labels sorted by
+    absolute change from first to last year."""
+    first_y, last_y = years[0], years[-1]
+    items_first = accessor(results_by_year[first_y])
+    items_last = accessor(results_by_year[last_y])
+    all_labels = sorted(set(items_first.keys()) | set(items_last.keys()))
+    pairs = []
+    for label in all_labels:
+        fm = items_first.get(label)
+        lm = items_last.get(label)
+        if fm is None or lm is None:
+            continue
+        pairs.append((label, fm, lm, lm - fm))
+    pairs.sort(key=lambda r: abs(r[3]), reverse=True)
+    return pairs
+
+
+def _compare_chart(years, years_str, results_by_year, selected_labels, accessor,
+                   *, title, y_label, y_range, fmt="{:+.2f}"):
+    fig = go.Figure()
+    for i, y in enumerate(years):
+        idx = accessor(results_by_year[y])
+        vals = [idx.get(label) for label in selected_labels]
+        fig.add_trace(go.Bar(
+            x=[lab[:50] for lab in selected_labels],
+            y=vals,
+            name=str(y),
+            marker_color=PALETTE[i % len(PALETTE)],
+            text=[fmt.format(v) if v is not None else "—" for v in vals],
+            textposition="outside",
+        ))
+    if y_range[0] < 0 < y_range[1]:
+        fig.add_hline(y=0, line_color="black", line_width=1)
+    fig.update_layout(
+        title=dict(text=title, font=dict(color=NAVY, size=15)),
+        barmode="group",
+        height=max(420, 80 * len(selected_labels)),
+        yaxis_title=y_label,
+        yaxis_range=list(y_range),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, title=""),
+    )
+    if len(selected_labels) > 4:
+        fig.update_xaxes(tickangle=-30)
+    fig.update_yaxes(gridcolor="rgba(127,127,127,0.25)")
+    return fig
+
+
 def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
-    """Render Streamlit longitudinal sections — line charts, item/subscale tables,
-    full-factor table, and side-by-side comparison."""
+    """Streamlined longitudinal snapshot."""
     if not results_by_year:
         st.info("No survey years loaded yet. Use the sidebar to upload a REDCap CSV.")
         return
@@ -79,11 +131,13 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
 
     years = sorted(results_by_year.keys(), key=_sort_key)
     years_str = [str(y) for y in years]
+    first_y, last_y = years[0], years[-1]
+    delta_col = f"Δ {first_y}→{last_y}"
 
     # =====================================================================
-    # Section 1: Headline Trends Across Years
+    # 1. Headline Trends Across Years
     # =====================================================================
-    st.subheader("Headline Trends Across Years")
+    st.subheader("Headline Trends")
     miniz_vals = [results_by_year[y]["miniz"]["clinical"].get("total", {}).get("mean")
                   for y in years]
     burnout_vals = [results_by_year[y]["miniz"]["clinical"].get("burnout_pct")
@@ -133,7 +187,7 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
         )
 
     # =====================================================================
-    # Section 2: Year-over-Year Deltas Table
+    # 2. Year-over-Year Deltas
     # =====================================================================
     st.markdown("---")
     st.subheader("Year-over-Year Deltas")
@@ -171,7 +225,7 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
     st.dataframe(pd.DataFrame(delta_rows), use_container_width=True, hide_index=True)
 
     # =====================================================================
-    # Section 3: MINI-Z Subscale Trends (S1, S2, Total)
+    # 3. MINI-Z Subscale Trends
     # =====================================================================
     st.markdown("---")
     st.subheader("MINI-Z Subscale Trends — Clinical Faculty")
@@ -213,7 +267,6 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
     fig.update_yaxes(range=[5, 25], gridcolor="rgba(127,127,127,0.25)")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Compact subscale/total table
     sub_rows = []
     for y in years:
         mz = results_by_year[y]["miniz"]["clinical"]
@@ -233,7 +286,7 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
     st.dataframe(pd.DataFrame(sub_rows), use_container_width=True, hide_index=True)
 
     # =====================================================================
-    # Section 4: MINI-Z Item-Level Trends (all 10 items)
+    # 4. MINI-Z Item-Level Trends
     # =====================================================================
     st.markdown("---")
     st.subheader("MINI-Z Item-Level Trends")
@@ -242,7 +295,6 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
         "5 = best on every item per Mini-Z 2.0). Hover for item n."
     )
 
-    # Item labels from first year, assumed consistent across years
     base_items = results_by_year[years[0]]["miniz"]["overall"]["items"]
     item_labels = [it["item"] for it in base_items]
     short_labels = [lab.split(".")[0] if "." in lab else lab[:6] for lab in item_labels]
@@ -277,9 +329,7 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
     fig.update_yaxes(gridcolor="rgba(127,127,127,0.25)")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Item-level table with delta latest vs first
     item_rows = []
-    first_y, last_y = years[0], years[-1]
     first_idx = {it["item"]: it for it in results_by_year[first_y]["miniz"]["overall"]["items"]}
     last_idx = {it["item"]: it for it in results_by_year[last_y]["miniz"]["overall"]["items"]}
     for label in item_labels:
@@ -293,23 +343,84 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
                            if (m is not None and sd is not None) else "—")
         first_m = (first_idx.get(label) or {}).get("mean")
         last_m = (last_idx.get(label) or {}).get("mean")
-        if first_m is not None and last_m is not None:
-            d = last_m - first_m
-            row[f"Δ {first_y}→{last_y}"] = _fmt_delta(d)
-        else:
-            row[f"Δ {first_y}→{last_y}"] = "—"
+        row[delta_col] = (_fmt_delta(last_m - first_m)
+                          if (first_m is not None and last_m is not None) else "—")
         item_rows.append(row)
     st.dataframe(pd.DataFrame(item_rows), use_container_width=True, hide_index=True)
 
     # =====================================================================
-    # Section 5: Top/Bottom Job Factors by Year (year-specific snapshots)
+    # 5. Retention Trends (NEW)
     # =====================================================================
     st.markdown("---")
-    st.subheader("Top & Bottom Job Factors — by Year")
+    st.subheader("Retention Trends")
     st.caption(
-        "Each year's top 5 satisfiers and top 5 dissatisfiers, side by side. "
-        "Mean impact: −2 (very negative) … +2 (very positive)."
+        "Item: \"In 3 years, I will still be working at VUMC.\" "
+        "At-risk = neutral or worse; likely-to-stay = likely or very likely."
     )
+
+    at_risk_vals = [(results_by_year[y]["retention"]["overall"] or {}).get("at_risk_pct")
+                    for y in years]
+    likely_vals = [(results_by_year[y]["retention"]["overall"] or {}).get("likely_stay_pct")
+                   for y in years]
+    ret_means = [(results_by_year[y]["retention"]["overall"] or {}).get("mean")
+                 for y in years]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years_str, y=likely_vals, mode="lines+markers+text",
+        text=[f"{v:.0f}%" if v is not None else "—" for v in likely_vals],
+        textposition="top center",
+        line=dict(color=NAVY, width=3),
+        marker=dict(size=10, color=NAVY),
+        name="% Likely-to-stay",
+    ))
+    fig.add_trace(go.Scatter(
+        x=years_str, y=at_risk_vals, mode="lines+markers+text",
+        text=[f"{v:.0f}%" if v is not None else "—" for v in at_risk_vals],
+        textposition="bottom center",
+        line=dict(color=ACCENT, width=3),
+        marker=dict(size=10, color=ACCENT),
+        name="% At-risk",
+    ))
+    fig.update_layout(
+        title=dict(text="Retention — At-risk vs Likely-to-stay",
+                   font=dict(color=NAVY, size=16)),
+        xaxis_title="Survey Year",
+        yaxis_title="% of respondents",
+        yaxis_range=[0, 100],
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        height=400,
+        margin=dict(l=40, r=20, t=60, b=80),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.20,
+                    xanchor="center", x=0.5),
+    )
+    fig.update_xaxes(type="category")
+    fig.update_yaxes(gridcolor="rgba(127,127,127,0.25)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    ret_rows = []
+    for y, mean_v, at_risk, likely in zip(years, ret_means, at_risk_vals, likely_vals):
+        ret_rows.append({
+            "Year": y,
+            "n": (results_by_year[y]["retention"]["overall"] or {}).get("n"),
+            "Mean (0–4)": mean_v,
+            "% At-risk": at_risk,
+            "% Likely-to-stay": likely,
+        })
+    st.dataframe(pd.DataFrame(ret_rows), use_container_width=True, hide_index=True)
+
+    # =====================================================================
+    # 6. Job Factors — top 5/bottom 5 per year + compare
+    # =====================================================================
+    st.markdown("---")
+    st.subheader("Job Factors")
+    st.caption(
+        "Year-specific top satisfiers and dissatisfiers (mean impact: "
+        "−2 negative … +2 positive). Use the comparison picker below to "
+        "track specific factors across years."
+    )
+
     cols = st.columns(len(years))
     for i, y in enumerate(years):
         with cols[i]:
@@ -327,7 +438,6 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
                 ]),
                 use_container_width=True, hide_index=True,
             )
-
             st.markdown("**Top 5 dissatisfiers**")
             st.dataframe(
                 pd.DataFrame([
@@ -337,160 +447,135 @@ def render_longitudinal_view(results_by_year: Dict[str, dict]) -> None:
                 use_container_width=True, hide_index=True,
             )
 
-    # =====================================================================
-    # Section 6: All Factors — Full Table Across Years
-    # =====================================================================
     st.markdown("---")
-    st.subheader("All Job Factors — Year-by-Year Means")
-    st.caption(
-        "Mean impact (−2 negative → +2 positive) for every factor in every "
-        "loaded year, sorted by latest-year mean. The Δ column shows change "
-        "from the earliest to the latest loaded year."
-    )
+    st.markdown("#### Side-by-side comparison — pick any factors")
+    st.caption("Defaults to the five biggest absolute movers between the "
+               "earliest and latest loaded years.")
 
-    all_factor_labels = sorted({f["factor"]
-                                for y in years
+    factor_accessor = lambda r: {f["factor"]: f["mean"] for f in r["factors"]
+                                  if f["mean"] is not None}
+    factor_movers = _compute_movers(results_by_year, years, factor_accessor)
+    all_factor_labels = sorted({f["factor"] for y in years
                                 for f in results_by_year[y]["factors"]
                                 if f["mean"] is not None})
+    factor_defaults = [label for label, _, _, _ in factor_movers[:5]] or all_factor_labels[:5]
 
-    delta_col = f"Δ {first_y}→{last_y}"
-    factor_rows = []
-    for label in all_factor_labels:
-        row = {"Job factor": label}
-        for y in years:
-            factors_idx = {f["factor"]: f for f in results_by_year[y]["factors"]}
-            row[str(y)] = (factors_idx.get(label) or {}).get("mean")
-        first_factors = {f["factor"]: f for f in results_by_year[first_y]["factors"]}
-        last_factors = {f["factor"]: f for f in results_by_year[last_y]["factors"]}
-        first_m = (first_factors.get(label) or {}).get("mean")
-        last_m = (last_factors.get(label) or {}).get("mean")
-        row[delta_col] = round(last_m - first_m, 2) if (first_m is not None and last_m is not None) else None
-        factor_rows.append(row)
-    factor_df = pd.DataFrame(factor_rows)
-
-    # Sort by latest-year mean descending
-    if str(last_y) in factor_df.columns:
-        factor_df = factor_df.sort_values(
-            by=str(last_y), ascending=False, na_position="last"
-        ).reset_index(drop=True)
-    st.dataframe(factor_df, use_container_width=True, hide_index=True)
-
-    # Biggest movers chart (top 10 by absolute Δ)
-    if delta_col in factor_df.columns:
-        movers = factor_df.copy()
-        movers["abs_delta"] = movers[delta_col].abs()
-        movers = movers.sort_values(by="abs_delta", ascending=False,
-                                    na_position="last").head(10)
-        if not movers.empty:
-            st.markdown("**Biggest movers (top 10 by absolute change)**")
-            fig = go.Figure()
-            for i, y in enumerate(years):
-                vals = [results_by_year[y]["factors"]
-                        for _ in range(1)]  # placeholder
-                factors_idx = {f["factor"]: f for f in results_by_year[y]["factors"]}
-                y_vals = [(factors_idx.get(label) or {}).get("mean")
-                          for label in movers["Job factor"]]
-                fig.add_trace(go.Bar(
-                    x=[lab[:50] for lab in movers["Job factor"]],
-                    y=y_vals,
-                    name=str(y),
-                    marker_color=PALETTE[i % len(PALETTE)],
-                    text=[f"{v:.2f}" if v is not None else "—" for v in y_vals],
-                    textposition="outside",
-                ))
-            fig.add_hline(y=0, line_color="black", line_width=1)
-            fig.update_layout(
-                title=dict(text="Top 10 Movers — Mean Impact by Year",
-                           font=dict(color=NAVY, size=15)),
-                barmode="group",
-                height=520,
-                yaxis_title="Mean impact (−2 negative → +2 positive)",
-                yaxis_range=[-2, 2],
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1, title=""),
-            )
-            fig.update_xaxes(tickangle=-30)
-            fig.update_yaxes(gridcolor="rgba(127,127,127,0.25)")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # =====================================================================
-    # Section 7: Side-by-Side Factor Comparison (user picks)
-    # =====================================================================
-    st.markdown("---")
-    st.subheader("Side-by-Side Job Factor Comparison")
-    st.caption(
-        "Pick any subset of factors to compare across years. Defaults to the "
-        "five biggest absolute movers."
-    )
-
-    # Default selection: top 5 movers
-    default_pick = []
-    if delta_col in factor_df.columns:
-        movers = factor_df.copy()
-        movers["abs_delta"] = movers[delta_col].abs()
-        movers = movers.sort_values(by="abs_delta", ascending=False,
-                                    na_position="last")
-        default_pick = movers["Job factor"].head(5).tolist()
-    if not default_pick:
-        default_pick = all_factor_labels[:5]
-
-    selected = st.multiselect(
-        "Factors to compare",
+    selected_factors = st.multiselect(
+        "Job factors to compare",
         all_factor_labels,
-        default=default_pick,
+        default=factor_defaults,
         key="factor_compare_multiselect",
     )
-
-    if selected:
-        fig = go.Figure()
-        for i, y in enumerate(years):
-            factors_idx = {f["factor"]: f for f in results_by_year[y]["factors"]}
-            vals = [(factors_idx.get(label) or {}).get("mean")
-                    for label in selected]
-            fig.add_trace(go.Bar(
-                x=[lab[:50] for lab in selected],
-                y=vals,
-                name=str(y),
-                marker_color=PALETTE[i % len(PALETTE)],
-                text=[f"{v:.2f}" if v is not None else "—" for v in vals],
-                textposition="outside",
-            ))
-        fig.add_hline(y=0, line_color="black", line_width=1)
-        fig.update_layout(
-            title=dict(text="Selected Factors — Mean Impact by Year",
-                       font=dict(color=NAVY, size=15)),
-            barmode="group",
-            height=max(420, 70 * len(selected)),
-            yaxis_title="Mean impact (−2 negative → +2 positive)",
-            yaxis_range=[-2, 2],
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1, title=""),
+    if selected_factors:
+        fig = _compare_chart(
+            years, years_str, results_by_year, selected_factors,
+            factor_accessor,
+            title="Selected Job Factors — Mean Impact by Year",
+            y_label="Mean impact (−2 negative → +2 positive)",
+            y_range=(-2, 2),
         )
-        if len(selected) > 4:
-            fig.update_xaxes(tickangle=-30)
-        fig.update_yaxes(gridcolor="rgba(127,127,127,0.25)")
         st.plotly_chart(fig, use_container_width=True)
 
-        # Companion delta table for the picked factors
+        # Companion delta table
         pick_rows = []
-        for label in selected:
+        for label in selected_factors:
             row = {"Job factor": label}
             for y in years:
-                factors_idx = {f["factor"]: f for f in results_by_year[y]["factors"]}
-                row[str(y)] = (factors_idx.get(label) or {}).get("mean")
-            first_factors = {f["factor"]: f for f in results_by_year[first_y]["factors"]}
-            last_factors = {f["factor"]: f for f in results_by_year[last_y]["factors"]}
-            fm = (first_factors.get(label) or {}).get("mean")
-            lm = (last_factors.get(label) or {}).get("mean")
+                row[str(y)] = factor_accessor(results_by_year[y]).get(label)
+            fm = factor_accessor(results_by_year[first_y]).get(label)
+            lm = factor_accessor(results_by_year[last_y]).get(label)
             row[delta_col] = round(lm - fm, 2) if (fm is not None and lm is not None) else None
             pick_rows.append(row)
         st.dataframe(pd.DataFrame(pick_rows), use_container_width=True, hide_index=True)
     else:
         st.info("Pick at least one factor to render the comparison chart.")
+
+    # =====================================================================
+    # 7. Leadership Items — top 5/bottom 5 per year + compare (NEW)
+    # =====================================================================
+    st.markdown("---")
+    st.subheader("Leadership Items")
+    st.caption(
+        "Year-specific top and bottom leadership ratings "
+        "(mean on a 1–5 scale; 5 = strongly agree)."
+    )
+
+    cols = st.columns(len(years))
+    for i, y in enumerate(years):
+        with cols[i]:
+            st.markdown(f"### {y}")
+            items = sorted(
+                [it for it in results_by_year[y]["leadership"]["overall"]
+                 if it.get("mean") is not None],
+                key=lambda x: -x["mean"],
+            )
+            top5 = items[:5]
+            bottom5 = items[-5:][::-1]
+
+            st.markdown("**Top 5 highest-rated**")
+            st.dataframe(
+                pd.DataFrame([
+                    {"Item": it["item"][:55],
+                     "Mean": it["mean"],
+                     "% Agree+": it.get("agree_pct")}
+                    for it in top5
+                ]),
+                use_container_width=True, hide_index=True,
+            )
+            st.markdown("**Top 5 lowest-rated**")
+            st.dataframe(
+                pd.DataFrame([
+                    {"Item": it["item"][:55],
+                     "Mean": it["mean"],
+                     "% Agree+": it.get("agree_pct")}
+                    for it in bottom5
+                ]),
+                use_container_width=True, hide_index=True,
+            )
+
+    st.markdown("---")
+    st.markdown("#### Side-by-side comparison — pick any leadership items")
+    st.caption("Defaults to the five biggest absolute movers between the "
+               "earliest and latest loaded years.")
+
+    ld_accessor = lambda r: {it["item"]: it["mean"]
+                              for it in r["leadership"]["overall"]
+                              if it.get("mean") is not None}
+    ld_movers = _compute_movers(results_by_year, years, ld_accessor)
+    all_ld_labels = sorted({it["item"] for y in years
+                            for it in results_by_year[y]["leadership"]["overall"]})
+    ld_defaults = [label for label, _, _, _ in ld_movers[:5]] or all_ld_labels[:5]
+
+    selected_ld = st.multiselect(
+        "Leadership items to compare",
+        all_ld_labels,
+        default=ld_defaults,
+        key="ld_compare_multiselect",
+    )
+    if selected_ld:
+        fig = _compare_chart(
+            years, years_str, results_by_year, selected_ld,
+            ld_accessor,
+            title="Selected Leadership Items — Mean Rating by Year",
+            y_label="Mean rating (1–5)",
+            y_range=(1, 5),
+            fmt="{:.2f}",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Companion delta table
+        pick_rows = []
+        for label in selected_ld:
+            row = {"Leadership item": label}
+            for y in years:
+                row[str(y)] = ld_accessor(results_by_year[y]).get(label)
+            fm = ld_accessor(results_by_year[first_y]).get(label)
+            lm = ld_accessor(results_by_year[last_y]).get(label)
+            row[delta_col] = round(lm - fm, 2) if (fm is not None and lm is not None) else None
+            pick_rows.append(row)
+        st.dataframe(pd.DataFrame(pick_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Pick at least one leadership item to render the comparison chart.")
 
     # =====================================================================
     # Footer
