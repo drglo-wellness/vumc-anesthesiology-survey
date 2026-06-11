@@ -428,36 +428,53 @@ with tab3:
         st.caption(
             "Generate a Word document covering item-level, subscale, well-being, "
             "NPS, retention, job-factor, and leadership changes across the loaded "
-            "years — with embedded charts. Suitable for sharing with leadership "
-            "before the faculty meeting."
+            "years — with embedded charts. Pick the sample scope: "
+            "*All faculty* includes both clinical and research respondents; "
+            "*Clinical only* filters WBI, NPS, retention, job factors, and "
+            "leadership to clinical-care providers (MINI-Z is always clinical "
+            "by Mini-Z 2.0 convention)."
         )
+        scope_label = st.radio(
+            "Sample scope",
+            options=["All faculty", "Clinical faculty only"],
+            horizontal=True,
+            key="long_report_scope",
+        )
+        scope = "clinical" if scope_label == "Clinical faculty only" else "all"
+        scope_suffix = "Clinical" if scope == "clinical" else "All"
+        cache_key = f"_long_report_bytes_{scope}"
+
         col_a, col_b = st.columns([1, 2])
         with col_a:
             if st.button(
-                "Generate longitudinal report",
+                f"Generate longitudinal report ({scope_label})",
                 type="primary",
                 use_container_width=True,
-                key="btn_long_report",
+                key=f"btn_long_report_{scope}",
             ):
-                with st.spinner("Building longitudinal report (~15 s)…"):
+                with st.spinner(
+                    f"Building longitudinal report — {scope_label} (~15 s)…"
+                ):
                     buf = io.BytesIO()
                     build_longitudinal_report(
-                        st.session_state["results"], buf
+                        st.session_state["results"], buf, scope=scope
                     )
                     buf.seek(0)
-                    st.session_state["_long_report_bytes"] = buf.getvalue()
+                    st.session_state[cache_key] = buf.getvalue()
         with col_b:
-            cached = st.session_state.get("_long_report_bytes")
+            cached = st.session_state.get(cache_key)
             if cached:
                 first_y = loaded_years[0]
                 last_y = loaded_years[-1]
                 st.download_button(
-                    f"Download {first_y}→{last_y} longitudinal report (.docx)",
+                    f"Download {first_y}→{last_y} longitudinal report "
+                    f"({scope_label}, .docx)",
                     data=cached,
-                    file_name=f"VUMC_Anesth_Longitudinal_{first_y}_to_{last_y}.docx",
+                    file_name=(f"VUMC_Anesth_Longitudinal_"
+                               f"{first_y}_to_{last_y}_{scope_suffix}.docx"),
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
-                    key="dl_long_report",
+                    key=f"dl_long_report_{scope}",
                 )
 
         st.markdown("---")
